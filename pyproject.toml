@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "routemcp"
-version = "0.1.0"
-description = "Capability-aware, OpenAI-compatible model router"
+version = "0.2.0"
+description = "Capability-aware LLM gateway and MCP routing server"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "pytest-asyncio>=0.23,<1", "ruff>=0.6,<1"]
+mcp = ["mcp>=2,<3; python_version >= '3.11'"]
 
 [project.scripts]
 routemcp = "routemcp.cli:main"
