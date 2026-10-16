@@ -1,0 +1,41 @@
+models:
+  - id: mock-fast
+    provider: mock
+    model: mock-fast
+    local: true
+    privacy: local
+    cost:
+      input_per_million: 0
+      output_per_million: 0
+    capabilities:
+      tools: false
+      json: true
+      vision: false
+      context_window: 32768
+      max_output_tokens: 4096
+    reliability:
+      success_rate: 0.98
+      tool_success_rate: 0
+      median_latency_ms: 25
+      quality: 0.55
+
+  - id: mock-quality
+    provider: mock
+    model: mock-quality
+    local: true
+    privacy: local
+    cost:
+      input_per_million: 0.25
+      output_per_million: 1
+    capabilities:
+      tools: true
+      json: true
+      vision: true
+      context_window: 131072
+      max_output_tokens: 8192
+    reliability:
+      success_rate: 0.995
+      tool_success_rate: 0.98
+      median_latency_ms: 150
+      quality: 0.9
+

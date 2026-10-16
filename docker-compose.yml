@@ -1,0 +1,16 @@
+services:
+  routemcp:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ROUTEMCP_API_KEY: ${ROUTEMCP_API_KEY:-}
+      ROUTEMCP_STORE_PROMPTS: ${ROUTEMCP_STORE_PROMPTS:-false}
+    volumes:
+      - ./models.yaml:/app/models.yaml:ro
+      - routemcp-data:/data
+    restart: unless-stopped
+
+volumes:
+  routemcp-data:
+
