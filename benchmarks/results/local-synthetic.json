@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-15",
+  "workload": "deterministic local OpenAI-compatible server with 5 ms simulated model latency",
+  "requests_per_round": 200,
+  "rounds": 5,
+  "concurrency": 20,
+  "gateway": {
+    "errors": 0,
+    "median_throughput_rps": 382.03,
+    "mean_latency_ms": 49.32,
+    "p50_latency_ms": 42.17
+  },
+  "direct": {
+    "errors": 0,
+    "median_throughput_rps": 389.84,
+    "mean_latency_ms": 48.57,
+    "p50_latency_ms": 35.42
+  },
+  "added_latency_ms": {
+    "mean": 0.75,
+    "p50": 6.75
+  },
+  "warning": "Synthetic localhost smoke benchmark. It does not measure real provider or model performance and is not a resume-quality result. Tail deltas were too noisy to report."
+}

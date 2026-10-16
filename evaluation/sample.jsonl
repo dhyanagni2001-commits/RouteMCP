@@ -1,0 +1,3 @@
+{"id":"rewrite-001","task_type":"transformation","messages":[{"role":"user","content":"Rewrite politely: Send the report now."}],"expected":{"type":"contains","value":"report"}}
+{"id":"classification-001","task_type":"classification","messages":[{"role":"user","content":"Classify the sentiment as positive or negative: I loved the clear documentation."}],"expected":{"type":"contains","value":"positive"}}
+{"id":"reasoning-001","task_type":"reasoning","messages":[{"role":"user","content":"A service has 3 replicas and each handles 20 requests per second. What is total capacity? Answer with the number."}],"expected":{"type":"regex","value":"\\b60\\b"}}

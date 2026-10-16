@@ -1,0 +1,19 @@
+models:
+  - id: benchmark-model
+    provider: openai-compatible
+    base_url: http://127.0.0.1:18766/v1
+    model: benchmark-model
+    cost:
+      input_per_million: 0
+      output_per_million: 0
+    capabilities:
+      tools: true
+      json: true
+      vision: false
+      context_window: 32768
+      max_output_tokens: 4096
+    reliability:
+      quality: 0.8
+      success_rate: 1
+      tool_success_rate: 1
+      median_latency_ms: 5
