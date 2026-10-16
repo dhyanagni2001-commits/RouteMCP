@@ -46,7 +46,7 @@ def test_analyzer_detects_tools_vision_and_json() -> None:
 
 def test_routing_profiles_and_constraints(tmp_path: Path) -> None:
     registry = ModelRegistry(
-        [model("fast", quality=0.55, latency=20), model("quality", quality=0.95, latency=900, tools=True)]
+        [model("fast", quality=0.7, latency=20), model("quality", quality=0.95, latency=900, tools=True)]
     )
     telemetry = TelemetryStore(str(tmp_path / "traces.db"))
     router = Router(registry, ProviderFactory(), telemetry)
@@ -110,7 +110,7 @@ def test_unhealthy_model_is_filtered(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_invalid_json_escalates_to_stronger_model(tmp_path: Path) -> None:
-    cheap = model("cheap", quality=0.5, latency=10)
+    cheap = model("cheap", quality=0.7, latency=10)
     strong = model("strong", quality=0.95, latency=100)
     telemetry = TelemetryStore(str(tmp_path / "traces.db"))
     providers = ProviderFactory()

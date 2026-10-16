@@ -13,6 +13,14 @@ COMPLEX_MARKERS = re.compile(
 )
 SIMPLE_MARKERS = re.compile(r"\b(rewrite|classify|translate|format|shorten|extract)\b", re.IGNORECASE)
 CODE_MARKERS = re.compile(r"```|\b(traceback|exception|function|class |SQL|Python|JavaScript)\b", re.I)
+CLASSIFICATION_MARKERS = re.compile(
+    r"\b(classify|categori[sz]e|sentiment|which (?:category|label)|label (?:this|the|it))\b", re.I
+)
+MATH_MARKERS = re.compile(
+    r"\b(calculate|compute|how (?:many|much)|total|sum|product|percent(?:age)?|average|solve|"
+    r"remain(?:s|ing)?|left over)\b",
+    re.I,
+)
 
 
 def _content_text(content: Any) -> str:
@@ -44,6 +52,10 @@ def analyze(request: ChatRequest) -> RequestFeatures:
             task_type = "coding"
         elif re.search(r"\b(json|schema|fields?|extract)\b", text, re.I):
             task_type = "extraction"
+        elif CLASSIFICATION_MARKERS.search(text):
+            task_type = "classification"
+        elif MATH_MARKERS.search(text) and re.search(r"\d", text):
+            task_type = "math"
         elif re.search(r"\b(rewrite|edit|format|summari[sz]e)\b", text, re.I):
             task_type = "transformation"
 

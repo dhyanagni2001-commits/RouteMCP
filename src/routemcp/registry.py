@@ -123,6 +123,23 @@ class ModelRegistry:
             self._health[model_id] = dict(result)
             if result.get("healthy"):
                 self.record_success(model_id)
+            else:
+                # A failed probe opens the circuit like repeated live failures do, so the
+                # model is retried (half-open) after the cooldown instead of staying
+                # excluded until someone probes it again.
+                self._failures[model_id] = max(
+                    self._failures.get(model_id, 0), self._failure_threshold
+                )
+                self._open_until[model_id] = time.time() + self._cooldown_seconds
+                status = self._health[model_id]
+                status.update(
+                    {
+                        "passive_healthy": False,
+                        "consecutive_failures": self._failures[model_id],
+                        "circuit_open": True,
+                        "circuit_open_until": self._open_until[model_id],
+                    }
+                )
 
     def record_success(self, model_id: str) -> None:
         with self._lock:
@@ -132,6 +149,11 @@ class ModelRegistry:
             status.update(
                 {"passive_healthy": True, "consecutive_failures": 0, "circuit_open": False}
             )
+            status.pop("half_open", None)
+            status.pop("circuit_open_until", None)
+            if "healthy" in status:
+                # A successful live call supersedes an older failed probe.
+                status["healthy"] = True
 
     def record_failure(self, model_id: str, error: str) -> None:
         with self._lock:

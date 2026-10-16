@@ -13,15 +13,34 @@ from .domain import ChatRequest, ModelConfig, RouteOptions, WorkflowRequest
 from .providers import ProviderFactory
 from .registry import ModelRegistry
 from .router import Router, RoutingError
+from .scoring import DEFAULT_PRIOR_STRENGTH, DEFAULT_QUALITY_PRIOR_STRENGTH
+from .stats import StatsStore
 from .telemetry import TelemetryStore
 
 
 class Container:
-    def __init__(self, registry: ModelRegistry, providers: ProviderFactory, telemetry: TelemetryStore):
+    def __init__(
+        self,
+        registry: ModelRegistry,
+        providers: ProviderFactory,
+        telemetry: TelemetryStore,
+        stats: Optional[StatsStore] = None,
+        prior_strength: float = DEFAULT_PRIOR_STRENGTH,
+        quality_prior_strength: float = DEFAULT_QUALITY_PRIOR_STRENGTH,
+    ):
         self.registry = registry
         self.providers = providers
         self.telemetry = telemetry
-        self.router = Router(registry, providers, telemetry)
+        self.stats = stats
+        self.router = Router(
+            registry, providers, telemetry, stats, prior_strength, quality_prior_strength
+        )
+
+    def close_stores(self) -> None:
+        self.telemetry.close()
+        self.registry.close()
+        if self.stats is not None:
+            self.stats.close()
 
 
 def load_container(config_path: Optional[str] = None, db_path: Optional[str] = None) -> Container:
@@ -39,7 +58,23 @@ def load_container(config_path: Optional[str] = None, db_path: Optional[str] = N
         )
     )
     telemetry = TelemetryStore(database)
-    return Container(registry, ProviderFactory(), telemetry)
+    stats = None
+    if os.getenv("ROUTEMCP_LEARNING", "true").lower() != "false":
+        stats = StatsStore(database, alpha=float(os.getenv("ROUTEMCP_EWMA_ALPHA", "0.1")))
+    prior_strength = float(os.getenv("ROUTEMCP_PRIOR_STRENGTH", str(DEFAULT_PRIOR_STRENGTH)))
+    quality_prior_strength = float(
+        os.getenv("ROUTEMCP_QUALITY_PRIOR_STRENGTH", str(DEFAULT_QUALITY_PRIOR_STRENGTH))
+    )
+    return Container(
+        registry, ProviderFactory(), telemetry, stats, prior_strength, quality_prior_strength
+    )
+
+
+def learned(container: Container, model_id: str) -> Optional[Dict[str, Any]]:
+    if container.stats is None:
+        return None
+    stats = container.stats.get(model_id)
+    return stats.model_dump(mode="json") if stats is not None else None
 
 
 def create_app(container: Optional[Container] = None) -> FastAPI:
@@ -51,12 +86,11 @@ def create_app(container: Optional[Container] = None) -> FastAPI:
         yield
         if owned:
             await app.state.container.providers.close()
-            app.state.container.telemetry.close()
-            app.state.container.registry.close()
+            app.state.container.close_stores()
 
     app = FastAPI(
         title="RouteMCP",
-        version="0.2.0",
+        version="0.3.0",
         description="Capability-aware LLM gateway and MCP routing server",
         lifespan=lifespan,
     )
@@ -96,6 +130,7 @@ def create_app(container: Optional[Container] = None) -> FastAPI:
                 {
                     **model.model_dump(mode="json", by_alias=True, exclude={"headers"}),
                     "health": container.registry.health(model.id),
+                    "learned": learned(container, model.id),
                 }
                 for model in container.registry.list()
             ]
@@ -126,6 +161,8 @@ def create_app(container: Optional[Container] = None) -> FastAPI:
             container.registry.remove(model_id, persist=True)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if container.stats is not None:
+            container.stats.reset(model_id)
 
     @app.post("/v1/router/models/{model_id}/probe", dependencies=protected)
     async def probe_model(model_id: str, container: Container = Depends(get_container)) -> Dict[str, Any]:

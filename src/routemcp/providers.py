@@ -101,6 +101,16 @@ class ModelProvider(ABC):
         return (self.config.base_url or "").rstrip("/") + "/models"
 
 
+def _status_error(exc: httpx.HTTPStatusError) -> ProviderError:
+    status = exc.response.status_code
+    error_type = "rate_limit" if status == 429 else "provider_unavailable" if status >= 500 else "provider_error"
+    return ProviderError(
+        f"provider returned HTTP {status}: {exc.response.text[:300]}",
+        error_type,
+        retryable=status == 429 or status >= 500,
+    )
+
+
 class OpenAICompatibleProvider(ModelProvider):
     def _base_url(self) -> str:
         base_url = self.config.base_url
@@ -130,13 +140,7 @@ class OpenAICompatibleProvider(ModelProvider):
         except httpx.TimeoutException as exc:
             raise ProviderError(str(exc), "timeout") from exc
         except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            error_type = "rate_limit" if status == 429 else "provider_unavailable" if status >= 500 else "provider_error"
-            raise ProviderError(
-                f"provider returned HTTP {status}: {exc.response.text[:300]}",
-                error_type,
-                retryable=status == 429 or status >= 500,
-            ) from exc
+            raise _status_error(exc) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError(str(exc), "provider_unavailable") from exc
         return ProviderResult(data, (time.perf_counter() - started) * 1000)
@@ -160,13 +164,7 @@ class OpenAICompatibleProvider(ModelProvider):
         except httpx.HTTPStatusError as exc:
             await exc.response.aread()
             await exc.response.aclose()
-            status = exc.response.status_code
-            error_type = "rate_limit" if status == 429 else "provider_unavailable" if status >= 500 else "provider_error"
-            raise ProviderError(
-                f"provider returned HTTP {status}: {exc.response.text[:300]}",
-                error_type,
-                retryable=status == 429 or status >= 500,
-            ) from exc
+            raise _status_error(exc) from exc
         except httpx.HTTPError as exc:
             if response is not None:
                 await response.aclose()
@@ -182,6 +180,9 @@ class OpenAICompatibleProvider(ModelProvider):
         )
 
 
+ANTHROPIC_FINISH_REASONS = {"end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length"}
+
+
 class AnthropicProvider(ModelProvider):
     def _headers(self) -> Dict[str, str]:
         headers = dict(self.config.headers)
@@ -191,7 +192,10 @@ class AnthropicProvider(ModelProvider):
         headers.setdefault("anthropic-version", "2023-06-01")
         return headers
 
-    async def complete(self, request: ChatRequest) -> ProviderResult:
+    def _url(self) -> str:
+        return (self.config.base_url or "https://api.anthropic.com/v1").rstrip("/") + "/messages"
+
+    def _payload(self, request: ChatRequest, stream: bool) -> Dict[str, Any]:
         messages = [m.model_dump(exclude_none=True) for m in request.messages if m.role != "system"]
         system = "\n".join(str(m.content) for m in request.messages if m.role == "system") or None
         payload: Dict[str, Any] = {
@@ -199,8 +203,12 @@ class AnthropicProvider(ModelProvider):
             "messages": messages,
             "max_tokens": request.max_tokens or 1024,
         }
+        if stream:
+            payload["stream"] = True
         if system:
             payload["system"] = system
+        if request.temperature is not None:
+            payload["temperature"] = min(request.temperature, 1.0)
         if request.tools:
             payload["tools"] = []
             for tool in request.tools:
@@ -212,24 +220,19 @@ class AnthropicProvider(ModelProvider):
                 if function.get("description"):
                     converted["description"] = function["description"]
                 payload["tools"].append(converted)
+        return payload
+
+    async def complete(self, request: ChatRequest) -> ProviderResult:
+        payload = self._payload(request, stream=False)
         started = time.perf_counter()
         try:
-            response = await self.client.post(
-                (self.config.base_url or "https://api.anthropic.com/v1").rstrip("/") + "/messages",
-                headers=self._headers(), json=payload,
-            )
+            response = await self.client.post(self._url(), headers=self._headers(), json=payload)
             response.raise_for_status()
             raw = response.json()
         except httpx.TimeoutException as exc:
             raise ProviderError(str(exc), "timeout") from exc
         except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            error_type = "rate_limit" if status == 429 else "provider_unavailable" if status >= 500 else "provider_error"
-            raise ProviderError(
-                f"provider returned HTTP {status}: {exc.response.text[:300]}",
-                error_type,
-                retryable=status == 429 or status >= 500,
-            ) from exc
+            raise _status_error(exc) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError(str(exc), "provider_unavailable") from exc
         content = raw.get("content", [])
@@ -249,11 +252,7 @@ class AnthropicProvider(ModelProvider):
         message: Dict[str, Any] = {"role": "assistant", "content": text or None}
         if tool_calls:
             message["tool_calls"] = tool_calls
-        finish_reason = {
-            "end_turn": "stop",
-            "tool_use": "tool_calls",
-            "max_tokens": "length",
-        }.get(raw.get("stop_reason"), raw.get("stop_reason"))
+        finish_reason = ANTHROPIC_FINISH_REASONS.get(raw.get("stop_reason"), raw.get("stop_reason"))
         data = {
             "id": raw.get("id", f"chatcmpl-{uuid.uuid4().hex}"),
             "object": "chat.completion",
@@ -263,6 +262,96 @@ class AnthropicProvider(ModelProvider):
             "usage": raw.get("usage", {}),
         }
         return ProviderResult(data, (time.perf_counter() - started) * 1000)
+
+    async def start_stream(self, request: ChatRequest) -> ProviderStream:
+        """Translate Anthropic Messages SSE events into OpenAI chat.completion.chunk events."""
+        started = time.perf_counter()
+        response: Optional[httpx.Response] = None
+        try:
+            upstream = self.client.build_request(
+                "POST", self._url(), headers=self._headers(), json=self._payload(request, stream=True)
+            )
+            response = await self.client.send(upstream, stream=True)
+            response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            if response is not None:
+                await response.aclose()
+            raise ProviderError(str(exc), "timeout") from exc
+        except httpx.HTTPStatusError as exc:
+            await exc.response.aread()
+            await exc.response.aclose()
+            raise _status_error(exc) from exc
+        except httpx.HTTPError as exc:
+            if response is not None:
+                await response.aclose()
+            raise ProviderError(str(exc), "provider_unavailable") from exc
+        assert response is not None
+        model_name = self.config.model
+
+        async def chunks() -> AsyncIterator[bytes]:
+            completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+            created = int(time.time())
+            tool_indexes: Dict[int, int] = {}
+
+            def chunk(delta: Dict[str, Any], finish_reason: Optional[str] = None) -> bytes:
+                event = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+                }
+                return f"data: {json.dumps(event)}\n\n".encode()
+
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    event = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                kind = event.get("type")
+                if kind == "message_start":
+                    completion_id = (event.get("message") or {}).get("id") or completion_id
+                    yield chunk({"role": "assistant", "content": ""})
+                elif kind == "content_block_start":
+                    block = event.get("content_block") or {}
+                    if block.get("type") == "tool_use":
+                        tool_index = len(tool_indexes)
+                        tool_indexes[event.get("index", 0)] = tool_index
+                        yield chunk({"tool_calls": [{
+                            "index": tool_index,
+                            "id": block.get("id", f"toolu_{uuid.uuid4().hex}"),
+                            "type": "function",
+                            "function": {"name": block.get("name", ""), "arguments": ""},
+                        }]})
+                    elif block.get("type") == "text" and block.get("text"):
+                        yield chunk({"content": block["text"]})
+                elif kind == "content_block_delta":
+                    delta = event.get("delta") or {}
+                    if delta.get("type") == "text_delta":
+                        yield chunk({"content": delta.get("text", "")})
+                    elif delta.get("type") == "input_json_delta":
+                        tool_index = tool_indexes.get(event.get("index", 0), 0)
+                        yield chunk({"tool_calls": [{
+                            "index": tool_index,
+                            "function": {"arguments": delta.get("partial_json", "")},
+                        }]})
+                elif kind == "message_delta":
+                    stop_reason = (event.get("delta") or {}).get("stop_reason")
+                    if stop_reason:
+                        yield chunk({}, ANTHROPIC_FINISH_REASONS.get(stop_reason, stop_reason))
+                elif kind == "error":
+                    error = event.get("error") or {}
+                    raise ProviderError(
+                        f"Anthropic stream error: {error.get('message', 'unknown error')}",
+                        error.get("type", "stream_error"),
+                    )
+                elif kind == "message_stop":
+                    break
+            yield b"data: [DONE]\n\n"
+
+        return ProviderStream(chunks(), response.aclose, (time.perf_counter() - started) * 1000)
 
 
 class MockProvider(ModelProvider):

@@ -26,6 +26,8 @@ class Capabilities(BaseModel):
     tools: bool = False
     json_output: bool = Field(default=True, alias="json")
     vision: bool = False
+    # Returns token log-probabilities (OpenAI `logprobs`), which cascades need.
+    logprobs: bool = False
     context_window: int = Field(default=8192, gt=0)
     max_output_tokens: int = Field(default=4096, gt=0)
 
@@ -77,6 +79,7 @@ class ChatRequest(BaseModel):
     response_format: Optional[Dict[str, Any]] = None
     temperature: Optional[float] = Field(default=None, ge=0, le=2)
     max_tokens: Optional[int] = Field(default=None, gt=0)
+    logprobs: Optional[bool] = None
     stream: bool = False
     route: Optional["RouteOptions"] = None
 
@@ -88,8 +91,13 @@ class RouteOptions(BaseModel):
     privacy: Literal["standard", "local-only"] = "standard"
     task_type: Optional[str] = None
     complexity: Optional[float] = Field(default=None, ge=0, le=1)
+    max_quality_gap: Optional[float] = Field(default=None, ge=0, le=1)
     validate_json: bool = True
     max_attempts: int = Field(default=3, ge=1, le=10)
+    # Try cheaper eligible models first and keep a confident answer; escalate
+    # toward the routed choice otherwise. Non-streaming requests only.
+    cascade: bool = False
+    cascade_min_logprob: float = Field(default=-0.01, le=0)
 
 
 class RequestFeatures(BaseModel):
@@ -111,6 +119,7 @@ class CandidateScore(BaseModel):
     estimated_cost_usd: float = 0
     reasons: List[str] = Field(default_factory=list)
     components: Dict[str, float] = Field(default_factory=dict)
+    evidence: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RoutingDecision(BaseModel):
