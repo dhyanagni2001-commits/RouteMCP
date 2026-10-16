@@ -24,6 +24,7 @@ services:
       - "127.0.0.1:8001:8001"
     environment:
       ROUTEMCP_DB: /data/routemcp.db
+      ROUTEMCP_MCP_API_KEY: ${ROUTEMCP_MCP_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}

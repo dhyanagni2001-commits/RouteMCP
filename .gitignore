@@ -8,3 +8,5 @@ __pycache__/
 dist/
 build/
 
+e2e-results/
+e2e-report.json
