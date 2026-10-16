@@ -7,7 +7,7 @@ from routemcp.analyzer import analyze
 from routemcp.domain import ChatRequest, Message, ModelConfig, ProviderKind, RouteOptions
 from routemcp.providers import ProviderFactory
 from routemcp.registry import ModelRegistry
-from routemcp.router import Router, RoutingError
+from routemcp.router import Router
 from routemcp.telemetry import TelemetryStore
 
 
@@ -79,13 +79,16 @@ async def test_execute_records_trace_without_prompt(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_streaming_is_explicitly_rejected(tmp_path: Path) -> None:
+async def test_streaming_returns_openai_sse_chunks(tmp_path: Path) -> None:
     telemetry = TelemetryStore(str(tmp_path / "traces.db"))
     providers = ProviderFactory()
     router = Router(ModelRegistry([model("fast", quality=0.5, latency=10)]), providers, telemetry)
-    with pytest.raises(RoutingError, match="streaming is not available") as error:
-        await router.execute(ChatRequest(messages=[Message(role="user", content="hello")], stream=True))
-    assert error.value.status_code == 422
+    request = ChatRequest(messages=[Message(role="user", content="hello")], stream=True)
+    plan = await router.prepare_stream(request)
+    body = b"".join([chunk async for chunk in plan.iterator])
+    assert plan.model_id == "fast"
+    assert b"chat.completion.chunk" in body
+    assert body.endswith(b"data: [DONE]\n\n")
     await providers.close()
     telemetry.close()
 

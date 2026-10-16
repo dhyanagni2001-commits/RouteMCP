@@ -73,11 +73,13 @@ class TelemetryStore:
         result["success_rate"] = round(result["success_rate"], 4)
         result["escalation_rate"] = round(escalations, 4)
         result["model_distribution"] = {row["selected_model"]: row["count"] for row in distribution}
-        result["estimated_savings_usd"] = round(self._estimated_savings(), 8)
+        result["upper_bound_cost_avoidance_usd"] = round(
+            self._upper_bound_cost_avoidance(), 8
+        )
         return result
 
-    def _estimated_savings(self) -> float:
-        """Compare successful routes with the most expensive eligible candidate."""
+    def _upper_bound_cost_avoidance(self) -> float:
+        """Diagnostic upper bound, not a quality-adjusted savings claim."""
         with self.lock:
             rows = self.connection.execute(
                 "SELECT decision_json, total_cost_usd FROM traces WHERE status = 'success'"

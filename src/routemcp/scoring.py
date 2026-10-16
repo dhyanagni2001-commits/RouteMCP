@@ -31,6 +31,8 @@ def _reject(
         reasons.append("model disabled")
     if health is not None and health.get("healthy") is False:
         reasons.append("provider unhealthy at last probe")
+    if health is not None and health.get("circuit_open") is True:
+        reasons.append("circuit breaker open after repeated failures")
     if features.requires_tools and not model.capabilities.tools:
         reasons.append("tool calling unsupported")
     if features.requires_json and not model.capabilities.json_output:

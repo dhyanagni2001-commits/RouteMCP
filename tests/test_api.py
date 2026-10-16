@@ -83,3 +83,21 @@ async def test_probe_and_workflow(tmp_path: Path) -> None:
         assert [item["step_id"] for item in workflow.json()["steps"]] == ["plan", "format"]
     await providers.close()
     telemetry.close()
+
+
+@pytest.mark.asyncio
+async def test_streaming_endpoint(tmp_path: Path) -> None:
+    providers = ProviderFactory()
+    telemetry = TelemetryStore(str(tmp_path / "api.db"))
+    container = Container(ModelRegistry([mock_model()]), providers, telemetry)
+    transport = httpx.ASGITransport(app=create_app(container))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"stream": True, "messages": [{"role": "user", "content": "hello"}]},
+        )
+        assert response.status_code == 200
+        assert response.headers["x-routemcp-model"] == "mock"
+        assert "data: [DONE]" in response.text
+    await providers.close()
+    telemetry.close()

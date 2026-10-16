@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .domain import ChatRequest, ModelConfig, RouteOptions, WorkflowRequest
 from .providers import ProviderFactory
@@ -26,8 +26,19 @@ class Container:
 
 def load_container(config_path: Optional[str] = None, db_path: Optional[str] = None) -> Container:
     config = config_path or os.getenv("ROUTEMCP_CONFIG", "models.yaml")
-    registry = ModelRegistry.from_yaml(config) if Path(config).exists() else ModelRegistry()
-    telemetry = TelemetryStore(db_path or os.getenv("ROUTEMCP_DB", "routemcp.db"))
+    database = db_path or os.getenv("ROUTEMCP_DB", "routemcp.db")
+    threshold = int(os.getenv("ROUTEMCP_CIRCUIT_FAILURES", "3"))
+    cooldown = float(os.getenv("ROUTEMCP_CIRCUIT_COOLDOWN_SECONDS", "30"))
+    registry = (
+        ModelRegistry.from_yaml(config, database, threshold, cooldown)
+        if Path(config).exists()
+        else ModelRegistry(
+            storage_path=database,
+            failure_threshold=threshold,
+            cooldown_seconds=cooldown,
+        )
+    )
+    telemetry = TelemetryStore(database)
     return Container(registry, ProviderFactory(), telemetry)
 
 
@@ -41,11 +52,12 @@ def create_app(container: Optional[Container] = None) -> FastAPI:
         if owned:
             await app.state.container.providers.close()
             app.state.container.telemetry.close()
+            app.state.container.registry.close()
 
     app = FastAPI(
         title="RouteMCP",
-        version="0.1.0",
-        description="Capability-aware OpenAI-compatible model router",
+        version="0.2.0",
+        description="Capability-aware LLM gateway and MCP routing server",
         lifespan=lifespan,
     )
     # Also initialize injected containers eagerly for ASGI clients that do not
@@ -92,7 +104,7 @@ def create_app(container: Optional[Container] = None) -> FastAPI:
     @app.post("/v1/router/models", status_code=201, dependencies=protected)
     async def register_model(model: ModelConfig, container: Container = Depends(get_container)) -> Dict[str, Any]:
         try:
-            container.registry.register(model)
+            container.registry.register(model, persist=True)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return model.model_dump(mode="json", by_alias=True, exclude={"headers"})
@@ -105,13 +117,13 @@ def create_app(container: Optional[Container] = None) -> FastAPI:
             container.registry.get(model_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        container.registry.register(model, replace=True)
+        container.registry.register(model, replace=True, persist=True)
         return model.model_dump(mode="json", by_alias=True, exclude={"headers"})
 
     @app.delete("/v1/router/models/{model_id}", status_code=204, dependencies=protected)
     async def delete_model(model_id: str, container: Container = Depends(get_container)) -> None:
         try:
-            container.registry.remove(model_id)
+            container.registry.remove(model_id, persist=True)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -134,7 +146,21 @@ def create_app(container: Optional[Container] = None) -> FastAPI:
         return container.router.decision(request).model_dump(mode="json")
 
     @app.post("/v1/chat/completions", dependencies=protected)
-    async def chat_completion(request: ChatRequest, container: Container = Depends(get_container)) -> Dict[str, Any]:
+    async def chat_completion(
+        request: ChatRequest, container: Container = Depends(get_container)
+    ) -> Any:
+        if request.stream:
+            plan = await container.router.prepare_stream(request)
+            return StreamingResponse(
+                plan.iterator,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "X-RouteMCP-Trace-Id": plan.trace_id,
+                    "X-RouteMCP-Model": plan.model_id,
+                },
+            )
         return await container.router.execute(request)
 
     @app.post("/v1/router/workflows", dependencies=protected)

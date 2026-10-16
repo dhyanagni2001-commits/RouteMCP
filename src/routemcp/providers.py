@@ -6,7 +6,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional
 
 import httpx
 
@@ -34,6 +34,18 @@ class ProviderResult:
         }
 
 
+class ProviderStream:
+    def __init__(
+        self,
+        iterator: AsyncIterator[bytes],
+        close: Callable[[], Awaitable[None]],
+        latency_ms: float,
+    ) -> None:
+        self.iterator = iterator
+        self.close = close
+        self.latency_ms = latency_ms
+
+
 class ModelProvider(ABC):
     def __init__(self, config: ModelConfig, client: httpx.AsyncClient):
         self.config = config
@@ -57,6 +69,13 @@ class ModelProvider(ABC):
             "detail": detail,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
+
+    async def start_stream(self, request: ChatRequest) -> ProviderStream:
+        raise ProviderError(
+            f"streaming is not supported by the {self.config.provider.value} adapter",
+            "streaming_unsupported",
+            retryable=False,
+        )
 
     def _headers(self) -> Dict[str, str]:
         headers = dict(self.config.headers)
@@ -83,22 +102,28 @@ class ModelProvider(ABC):
 
 
 class OpenAICompatibleProvider(ModelProvider):
-    async def complete(self, request: ChatRequest) -> ProviderResult:
+    def _base_url(self) -> str:
         base_url = self.config.base_url
         if self.config.provider == ProviderKind.OPENAI:
             base_url = base_url or "https://api.openai.com/v1"
         elif self.config.provider == ProviderKind.GEMINI:
             base_url = base_url or "https://generativelanguage.googleapis.com/v1beta/openai"
         assert base_url
+        return base_url.rstrip("/")
+
+    def _payload(self, request: ChatRequest, stream: bool) -> Dict[str, Any]:
         payload = request.model_dump(exclude={"route"}, exclude_none=True)
         payload["model"] = self.config.model
-        payload["stream"] = False
+        payload["stream"] = stream
+        return payload
+
+    async def complete(self, request: ChatRequest) -> ProviderResult:
         started = time.perf_counter()
         try:
             response = await self.client.post(
-                base_url.rstrip("/") + "/chat/completions",
+                self._base_url() + "/chat/completions",
                 headers=self._headers(),
-                json=payload,
+                json=self._payload(request, stream=False),
             )
             response.raise_for_status()
             data = response.json()
@@ -115,6 +140,46 @@ class OpenAICompatibleProvider(ModelProvider):
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError(str(exc), "provider_unavailable") from exc
         return ProviderResult(data, (time.perf_counter() - started) * 1000)
+
+    async def start_stream(self, request: ChatRequest) -> ProviderStream:
+        started = time.perf_counter()
+        response: Optional[httpx.Response] = None
+        try:
+            upstream = self.client.build_request(
+                "POST",
+                self._base_url() + "/chat/completions",
+                headers=self._headers(),
+                json=self._payload(request, stream=True),
+            )
+            response = await self.client.send(upstream, stream=True)
+            response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            if response is not None:
+                await response.aclose()
+            raise ProviderError(str(exc), "timeout") from exc
+        except httpx.HTTPStatusError as exc:
+            await exc.response.aread()
+            await exc.response.aclose()
+            status = exc.response.status_code
+            error_type = "rate_limit" if status == 429 else "provider_unavailable" if status >= 500 else "provider_error"
+            raise ProviderError(
+                f"provider returned HTTP {status}: {exc.response.text[:300]}",
+                error_type,
+                retryable=status == 429 or status >= 500,
+            ) from exc
+        except httpx.HTTPError as exc:
+            if response is not None:
+                await response.aclose()
+            raise ProviderError(str(exc), "provider_unavailable") from exc
+        assert response is not None
+
+        async def chunks() -> AsyncIterator[bytes]:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+
+        return ProviderStream(
+            chunks(), response.aclose, (time.perf_counter() - started) * 1000
+        )
 
 
 class AnthropicProvider(ModelProvider):
@@ -226,6 +291,39 @@ class MockProvider(ModelProvider):
             "usage": {"prompt_tokens": max(1, len(content) // 4), "completion_tokens": max(1, len(answer) // 4)},
         }
         return ProviderResult(payload, self.config.reliability.median_latency_ms)
+
+    async def start_stream(self, request: ChatRequest) -> ProviderStream:
+        content = f"[{self.config.id}] {request.messages[-1].content}"
+        completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+
+        async def chunks() -> AsyncIterator[bytes]:
+            first = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": self.config.model,
+                "choices": [
+                    {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+                ],
+            }
+            body = {
+                **first,
+                "choices": [
+                    {"index": 0, "delta": {"content": content}, "finish_reason": None}
+                ],
+            }
+            final = {
+                **first,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            for event in (first, body, final):
+                yield f"data: {json.dumps(event)}\n\n".encode()
+            yield b"data: [DONE]\n\n"
+
+        async def close() -> None:
+            return None
+
+        return ProviderStream(chunks(), close, self.config.reliability.median_latency_ms)
 
 
 class ProviderFactory:
