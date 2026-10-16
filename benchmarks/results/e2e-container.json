@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-15",
+  "image": "routemcp:verify",
+  "image_id": "sha256:043a28e438ac837c674b4dfeb54bf3a52f599d825736c0539fd91df9dc1e537b",
+  "scope": "Local production-container E2E using deterministic mock models; no cloud provider credentials were available.",
+  "http": {
+    "total_load_requests": 1100,
+    "errors": 0,
+    "completion": {
+      "requests": 500,
+      "concurrency": 25,
+      "throughput_rps": 650.48,
+      "latency_ms": {"mean": 36.69, "p50": 25.56, "p95": 91.03, "p99": 168.47}
+    },
+    "decision": {
+      "requests": 500,
+      "concurrency": 25,
+      "throughput_rps": 338.34,
+      "latency_ms": {"mean": 70.73, "p50": 54.72, "p95": 180.57, "p99": 319.06}
+    },
+    "streaming": {
+      "requests": 100,
+      "concurrency": 25,
+      "throughput_rps": 357.0,
+      "latency_ms": {"mean": 62.63, "p50": 47.48, "p95": 147.38, "p99": 186.11},
+      "properly_terminated": true
+    }
+  },
+  "functional": {
+    "health_check": true,
+    "model_registration": true,
+    "model_probe": true,
+    "two_step_workflow": true,
+    "registration_survived_container_replacement": true,
+    "registered_models_after_restart": 3
+  },
+  "failover": {
+    "scenario": "Unreachable OpenAI-compatible upstream followed by healthy mock model",
+    "successful_fallbacks": 3,
+    "failed_requests": 0,
+    "attempts_before_circuit": 2,
+    "attempts_after_circuit": 1,
+    "circuit_opened_after_failures": 3,
+    "median_failover_latency_ms": 1.5,
+    "post_circuit_latency_ms": 1.46
+  },
+  "mcp": {
+    "transport": "Streamable HTTP",
+    "protocol_version": "2026-07-28",
+    "handshake": true,
+    "tool_discovery": true,
+    "route_decide_call": true,
+    "tool_error": false,
+    "tools": ["route_decide", "route_complete", "list_routed_models"]
+  },
+  "limitations": [
+    "Mock models do not establish real-model answer quality.",
+    "The results are localhost container measurements, not internet provider latency.",
+    "No OpenAI, Anthropic, or Gemini credentials were present.",
+    "A 200-500 task real-model evaluation is still required before making quality or savings claims."
+  ]
+}

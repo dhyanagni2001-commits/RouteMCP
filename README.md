@@ -314,6 +314,26 @@ requests/second through RouteMCP versus 389.84 direct, and mean added latency of
 See `benchmarks/results/local-synthetic.json`. This validates the benchmark and
 gateway path only—it is not a real-model performance claim or resume result.
 
+### Container end-to-end result
+
+The production image was also exercised through its public HTTP and MCP
+interfaces. The local deterministic run completed 1,100 load-test requests with
+zero errors. At concurrency 25 it measured 650.48 completion requests/second,
+338.34 routing decisions/second, and 357.0 streaming requests/second. Completion
+latency was 25.56 ms p50 and 91.03 ms p95.
+
+The same run verified model registration across complete container replacement,
+a two-step workflow, stream termination, health probing, three successful typed
+failovers, and circuit opening after the third provider failure. Median local
+failover latency was 1.50 ms; the first request after the circuit opened took
+1.46 ms and skipped the failed provider. A real Streamable HTTP MCP client
+negotiated protocol `2026-07-28`, discovered all three tools, and successfully
+called `route_decide`.
+
+Full machine-readable results and limitations are in
+`benchmarks/results/e2e-container.json`. These are gateway correctness and local
+performance numbers—not model-quality evidence.
+
 ## Production status
 
 The current release is appropriate for a single-node gateway: durable model
